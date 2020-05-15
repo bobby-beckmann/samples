@@ -159,6 +159,8 @@ function hangup() {
   callButton.disabled = false;
 }
 
+
+
 function setCryptoKey(event) {
   console.log('Setting crypto key to ' + cryptoKey.value);
   const currentCryptoKey = cryptoKey.value;
@@ -168,11 +170,12 @@ function setCryptoKey(event) {
   } else {
     banner.innerText = 'Encryption is OFF';
   }
-  worker.postMessage({
-    operation: 'setCryptoKey',
-    currentCryptoKey,
-    useCryptoOffset,
-  });
+
+    worker.postMessage({
+        operation: 'setCryptoKey',
+        currentCryptoKey,
+        useCryptoOffset,
+    });
 }
 
 function toggleMute(event) {

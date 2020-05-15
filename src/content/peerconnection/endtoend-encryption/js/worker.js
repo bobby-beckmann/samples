@@ -50,69 +50,90 @@ function dump(encodedFrame, direction, max = 16) {
 let scount = 0;
 function encodeFunction(encodedFrame, controller) {
   if (scount++ < 30) { // dump the first 30 packets.
-    dump(encodedFrame, 'send');
+    //dump(encodedFrame, 'send');
   }
+
+//    console.log(currentCryptoKey);  
   if (currentCryptoKey) {
-    const view = new DataView(encodedFrame.data);
-    // Any length that is needed can be used for the new buffer.
-    const newData = new ArrayBuffer(encodedFrame.data.byteLength + 5);
-    const newView = new DataView(newData);
 
     const cryptoOffset = useCryptoOffset? frameTypeToCryptoOffset[encodedFrame.type] : 0;
-    for (let i = 0; i < cryptoOffset && i < encodedFrame.data.byteLength; ++i) {
-      newView.setInt8(i, view.getInt8(i));
-    }
-    // This is a bitwise xor of the key with the payload. This is not strong encryption, just a demo.
-    for (let i = cryptoOffset; i < encodedFrame.data.byteLength; ++i) {
-      const keyByte = currentCryptoKey.charCodeAt(i % currentCryptoKey.length);
-      newView.setInt8(i, view.getInt8(i) ^ keyByte);
-    }
-    // Append keyIdentifier.
-    newView.setUint8(encodedFrame.data.byteLength, currentKeyIdentifier % 0xff);
-    // Append checksum
-    newView.setUint32(encodedFrame.data.byteLength + 1, 0xDEADBEEF);
+    
+    const dataToEnc = encodedFrame.data.slice(cryptoOffset);
+    const dataHeader = encodedFrame.data.slice(0, cryptoOffset);
 
-    encodedFrame.data = newData;
+    const iv = self.crypto.getRandomValues(new Uint8Array(12));
+          
+    self.crypto.subtle.encrypt({
+                                 name: "AES-GCM",
+                                 iv: iv             
+    }, currentCryptoKey, dataToEnc).then(function (result) {
+        const newData = new Uint8Array(dataHeader.byteLength + result.byteLength + iv.byteLength);
+        newData.set(new Uint8Array(dataHeader), 0);
+        newData.set(new Uint8Array(result), dataHeader.byteLength);
+        newData.set(new Uint8Array(iv), dataHeader.byteLength + result.byteLength);
+              
+        encodedFrame.data = newData.buffer;
+        controller.enqueue(encodedFrame);
+
+    });
+
+      
+  } else {
+      controller.enqueue(encodedFrame);
   }
-  controller.enqueue(encodedFrame);
 }
 
 let rcount = 0;
 function decodeFunction(encodedFrame, controller) {
   if (rcount++ < 30) { // dump the first 30 packets
-    dump(encodedFrame, 'recv');
+    //dump(encodedFrame, 'recv');
   }
   const view = new DataView(encodedFrame.data);
   const checksum = encodedFrame.data.byteLength > 4 ? view.getUint32(encodedFrame.data.byteLength - 4) : false;
-  if (currentCryptoKey) {
-    if (checksum !== 0xDEADBEEF) {
-      console.log('Corrupted frame received, checksum ' +
-                  checksum.toString(16));
-      return; // This can happen when the key is set and there is an unencrypted frame in-flight.
-    }
-    const keyIdentifier = view.getUint8(encodedFrame.data.byteLength - 5);
-    if (keyIdentifier !== currentKeyIdentifier) {
-      console.log(`Key identifier mismatch, got ${keyIdentifier} expected ${currentKeyIdentifier}.`);
-      return;
-    }
 
-    const newData = new ArrayBuffer(encodedFrame.data.byteLength - 5);
-    const newView = new DataView(newData);
+  if (currentCryptoKey) {
+
     const cryptoOffset = useCryptoOffset? frameTypeToCryptoOffset[encodedFrame.type] : 0;
 
-    for (let i = 0; i < cryptoOffset; ++i) {
-      newView.setInt8(i, view.getInt8(i));
-    }
-    for (let i = cryptoOffset; i < encodedFrame.data.byteLength - 5; ++i) {
-      const keyByte = currentCryptoKey.charCodeAt(i % currentCryptoKey.length);
-      newView.setInt8(i, view.getInt8(i) ^ keyByte);
-    }
-    encodedFrame.data = newData;
-  } else if (checksum === 0xDEADBEEF) {
-    return; // encrypted in-flight frame but we already forgot about the key.
-  }
-  controller.enqueue(encodedFrame);
+    const dataHeader = encodedFrame.data.slice(0, cryptoOffset);
+    const dataToDec = encodedFrame.data.slice(cryptoOffset, encodedFrame.data.byteLength - 12);
+    const iv = encodedFrame.data.slice(encodedFrame.data.byteLength - 12);
+    self.crypto.subtle.decrypt({
+                                 name: "AES-GCM",
+                                 iv: iv             
+    }, currentCryptoKey, dataToDec).then(function (result) {
+        
+        const newData = new Uint8Array(dataHeader.byteLength + result.byteLength);
+        newData.set(new Uint8Array(dataHeader), 0);
+        newData.set(new Uint8Array(result), dataHeader.byteLength);
+              
+        encodedFrame.data = newData.buffer;
+        controller.enqueue(encodedFrame);
+
+    });
+
+  } else {
+    controller.enqueue(encodedFrame);
+  } 
 }
+
+  function make_video_key() { 
+   return new Promise(function(resolve, reject) {
+      self.crypto.subtle.generateKey(
+	  {
+              name: "AES-GCM",
+              length: 256, //can be  128, 192, or 256
+          },
+          true, //whether the key is extractable (i.e. can be used in exportKey)
+	  ["encrypt", "decrypt"] //can "encrypt", "decrypt", "wrapKey", or "unwrapKey"
+      ).then(function(k) {
+          resolve(k)
+      }).catch(function(err){
+          console.error(err);
+      });      
+   });
+  }
+
 
 onmessage = async (event) => {
   const {operation} = event.data;
@@ -136,7 +157,7 @@ onmessage = async (event) => {
     if (event.data.currentCryptoKey !== currentCryptoKey) {
       currentKeyIdentifier++;
     }
-    currentCryptoKey = event.data.currentCryptoKey;
+      make_video_key().then(function(k) {currentCryptoKey = k});
     useCryptoOffset = event.data.useCryptoOffset;
   }
 };
